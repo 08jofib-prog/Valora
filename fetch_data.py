@@ -85,6 +85,24 @@ def tiingo(ticker, start, key):
     return {r["date"][:10]: float(r["adjClose"]) for r in rows if r.get("adjClose")}
 
 
+def yahoo(ticker, start):
+    sym = ticker.replace(".", "-")
+    p1 = int(datetime(start.year, start.month, start.day, tzinfo=timezone.utc).timestamp())
+    p2 = int(time.time()) + 86400
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+           f"?period1={p1}&period2={p2}&interval=1d&events=div%2Csplit")
+    res = json.loads(http_get(url))["chart"]["result"][0]
+    off = res.get("meta", {}).get("gmtoffset", 0) or 0
+    ts = res.get("timestamp") or []
+    ind = res["indicators"]
+    closes = (ind.get("adjclose") or [{}])[0].get("adjclose") or ind["quote"][0]["close"]
+    out = {}
+    for t, c in zip(ts, closes):
+        if c is not None and c > 0:
+            out[datetime.fromtimestamp(t + off, timezone.utc).strftime("%Y-%m-%d")] = float(c)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="data.json")
@@ -92,15 +110,29 @@ def main():
     a = ap.parse_args()
 
     key = os.environ.get("TIINGO_API_KEY", "").strip()
-    source = "Tiingo" if key else "Stooq"
     start = date.today() - timedelta(days=int(a.days * 1.5) + 10)
-    fetch = (lambda t: tiingo(t, start, key)) if key else (lambda t: stooq(t, start))
-    pause = 0.0 if not key else 1.5
 
+    # Källor i prioritetsordning; den första som levererar index-data används för allt.
+    providers = []
+    if key:
+        providers.append(("Tiingo", lambda t: tiingo(t, start, key), 1.5))
+    providers.append(("Yahoo", lambda t: yahoo(t, start), 0.4))
+    providers.append(("Stooq", lambda t: stooq(t, start), 0.0))
+
+    idx = None
+    for source, fetch, pause in providers:
+        print(f"Provar källa: {source}")
+        try:
+            idx = fetch(INDEX_TICKER)
+            if len(idx) >= MIN_ROWS:
+                break
+            print(f"  för lite data från {source} ({len(idx)} rader)", file=sys.stderr)
+        except Exception as e:
+            print(f"  {source} fungerade inte: {e}", file=sys.stderr)
+        idx = None
+    if idx is None:
+        sys.exit("Ingen datakälla fungerade – avbryter utan att skriva.")
     print(f"Källa: {source}, från {start}")
-    idx = fetch(INDEX_TICKER)
-    if len(idx) < MIN_ROWS:
-        sys.exit(f"För lite indexdata ({len(idx)} rader) – avbryter utan att skriva.")
     cal = sorted(idx)[-a.days:]                      # gemensam handelskalender
 
     stocks, failed = [], []
