@@ -337,23 +337,23 @@ async function loadReal(){try{const r=await fetch('data.json',{cache:'no-cache'}
  const n=d.index.length;if(d.index.some(v=>!(v>0)))throw 0;
  const st=d.stocks.filter(x=>x&&x.k&&Array.isArray(x.p)&&x.p.length===n&&x.p.every(v=>v>0));if(st.length<30)throw 0;
  N=n;idx=d.index.slice();mr=[0];for(let t=1;t<N;t++)mr.push(idx[t]/idx[t-1]-1);
- S=st.map(x=>({k:x.k,n:x.n||x.k,p:x.p.slice()}));DATA=d;REAL=true;return true}catch(e){return false}}
+ S=st.map(x=>({k:x.k,n:x.n||x.k,p:x.p.slice()}));st.forEach(x=>{SEC[x.k]=x.s||SEC[x.k]||'Övrigt'});DATA=d;REAL=true;return true}catch(e){return false}}
 const mean=a=>a.reduce((x,y)=>x+y,0)/a.length;
 const sd=a=>{const m=mean(a);return Math.sqrt(mean(a.map(x=>(x-m)**2)))||1e-9};
 function feat(P,M,t){const rs=[];for(let i=t-29;i<=t;i++)rs.push(P[i]/P[i-1]-1);
  let g=0,l=0;for(let i=t-13;i<=t;i++){const d=P[i]-P[i-1];d>0?g+=d:l-=d}
  const rsi=l===0?100:100-100/(1+g/l);
  return[P[t]/P[t-5]-1,P[t]/P[t-20]-1,rsi,sd(rs.slice(-5))/sd(rs),P[t]/mean(P.slice(t-49,t+1))-1,(P[t]/P[t-20]-1)-(M[t]/M[t-20]-1)];}
-function model(P,h){const X=[],Y=[];
- for(let t=60;t<P.length-h;t++){X.push(feat(P,idx,t));Y.push(P[t+h]/P[t]-1)}
+function model(P,h){const F=P._F||(P._F=(()=>{const a=[];for(let t=60;t<P.length;t++)a.push(feat(P,idx,t));return a})());
+ const X=F.slice(0,P.length-h-60),Y=[];for(let t=60;t<P.length-h;t++)Y.push(P[t+h]/P[t]-1);
  const D=X[0].length,mu=[],sg=[];
  for(let j=0;j<D;j++){const c=X.map(x=>x[j]);mu.push(mean(c));sg.push(sd(c))}
  const z=x=>x.map((v,j)=>(v-mu[j])/sg[j]);
- const Z=X.map(z),q=z(feat(P,idx,P.length-1)),K=40;
+ const Z=X.map(z),q=z(F[F.length-1]),K=40;
  const nn=Z.map((x,i)=>[x.reduce((s,v,j)=>s+(v-q[j])**2,0),i]).sort((a,b)=>a[0]-b[0]).slice(0,K).map(a=>Y[a[1]]);
  const pos=nn.filter(y=>y>0).length,base=Y.filter(y=>y>0).length/Y.length;
- return{p:(pos+5)/(K+10),base,edge:(pos+5)/(K+10)-base,er:mean(nn),sd:sd(nn),n:K,f:feat(P,idx,P.length-1)};}
-let hz=5,open="",q="",sf="Alla",srt="p";const cache={};
+ return{p:(pos+5)/(K+10),base,edge:(pos+5)/(K+10)-base,er:mean(nn),sd:sd(nn),n:K,f:F[F.length-1]};}
+let hz=5,open="",q="",sf="Alla",srt="p",shown=50;const cache={};
 const ls=(k,v)=>{try{return v===undefined?localStorage.getItem(k):localStorage.setItem(k,v)}catch(e){return null}};
 let fav=new Set();try{fav=new Set(JSON.parse(ls("aa_fav")||"[]"))}catch(e){}
 const DEF={th:"",fs:"m",cb:"0",cmp:"0",rm:"0",hz:"5",srt:"p",lim:"0",min:"0",sp:"1"};let ST={...DEF};try{Object.assign(ST,JSON.parse(ls("aa_st")||"{}"))}catch(e){}
@@ -403,19 +403,19 @@ function mkt(){const t=P=>P.length-1,up=S.filter(s=>s.p[t(s.p)]>mean(s.p.slice(-
 let btDone=0;
 function runBT(){const h=5,L=20,dt=[];for(let t=N-205;t<N-h;t+=10)dt.push(t);
  let eq=[1],bm=[1],hit=0,n=0,ra=[],ru=[];
- for(const t of dt){const r=S.slice(0,L).map(s=>({r:s.p[t+h]/s.p[t]-1,p:model(s.p.slice(0,t+1),h).p})).sort((a,b)=>b.p-a.p),tp=r.slice(0,5),a=mean(tp.map(x=>x.r)),u=mean(r.map(x=>x.r));
+ for(const t of dt){const r=S.filter((_,i)=>i%Math.max(1,Math.floor(S.length/L))===0).slice(0,L).map(s=>({r:s.p[t+h]/s.p[t]-1,p:model(s.p.slice(0,t+1),h).p})).sort((a,b)=>b.p-a.p),tp=r.slice(0,5),a=mean(tp.map(x=>x.r)),u=mean(r.map(x=>x.r));
   tp.forEach(x=>{n++;if(x.r>0)hit++});ra.push(a);ru.push(u);eq.push(eq.at(-1)*(1+a));bm.push(bm.at(-1)*(1+u))}
  const all=eq.concat(bm),mn=Math.min(...all),mx=Math.max(...all),X=i=>(i/(eq.length-1)*300).toFixed(1),Y=v=>(56-(v-mn)/(mx-mn||1)*52).toFixed(1),ln=(a,c,d)=>`<polyline points="${a.map((v,i)=>X(i)+","+Y(v)).join(" ")}" fill="none" stroke="${c}" stroke-width="2" ${d||""} vector-effect="non-scaling-stroke"/>`;
  $("#bt").innerHTML=`<svg viewBox="0 0 300 60" preserveAspectRatio="none" style="height:90px">${ln(bm,"rgba(150,156,172,.9)",'stroke-dasharray="4 3"')}${ln(eq,"var(--ac)")}</svg><div class="grid"><div><span>Träffsäkerhet</span><b>${pc(hit/n)}</b></div><div><span>Topp 5 per period</span><b class="${mean(ra)>=0?"up":"dn"}">${sg(mean(ra))}</b></div><div><span>Alla aktier</span><b>${sg(mean(ru))}</b></div><div><span>Skillnad</span><b class="${mean(ra)-mean(ru)>=0?"up":"dn"}">${sg(mean(ra)-mean(ru))}</b></div></div><p style="font-size:0.8125rem;margin-top:10px">Walk-forward på ${dt.length} perioder (utan framåtblick), 20 aktier. ${REAL?"Historisk simulering av modellen: ingen garanti för framtida träffsäkerhet.":"Simulerad demodata: inget bevis för verklig träffsäkerhet."}</p>`}
-function chips(){$("#chips").innerHTML=["Alla","★","Teknik","Finans","Hälsa","Konsument","Energi","Industri"].map(c=>`<button data-c="${c}" class="${c==sf?"on":""}">${c=="★"?"★ Favoriter":c}</button>`).join("")}
+function chips(){const sc=S?[...new Set(S.map(s=>SEC[s.k]||"Övrigt"))].sort((a,b)=>a.localeCompare(b,"sv")):["Teknik","Finans","Hälsa","Konsument","Energi","Industri"];$("#chips").innerHTML=["Alla","★",...sc].map(c=>`<button data-c="${c}" class="${c==sf?"on":""}">${c=="★"?"★ Favoriter":c}</button>`).join("")}
 function render(){
  const res=getRes().map((s,i)=>({...s,rank:i+1})).filter(s=>!q||(s.k+" "+s.n).toLowerCase().includes(q)).filter(s=>sf=="Alla"||(sf=="★"?fav.has(s.k):SEC[s.k]==sf)).filter(s=>q||!+ST.lim||sf!="Alla"||s.rank<=+ST.lim).filter(s=>q||s.m.p*100>=+ST.min).sort(srt=="er"?(a,b)=>b.m.er-a.m.er:srt=="risk"?(a,b)=>a.m.sd-b.m.sd:()=>0);
- $("#list").innerHTML='<div class="cap"><span>Chans att stiga på '+hz+' dagar</span><span>Förv. avkastning</span></div>'+res.map((s,i)=>{const m=s.m,f=m.f;return `<div class="card ${open===s.k?"open":""}" data-k="${s.k}" style="--item-index:${i%16}">
+ $("#list").innerHTML='<div class="cap"><span>Chans att stiga på '+hz+' dagar</span><span>Förv. avkastning</span></div>'+res.slice(0,shown).map((s,i)=>{const m=s.m,f=m.f;return `<div class="card ${open===s.k?"open":""}" data-k="${s.k}" style="--item-index:${i%16}">
  <div class="row" role="button" tabindex="0" aria-expanded="${open===s.k}"><div class="rk">${s.rank}</div><div class="nm"><b>${s.k}</b><small>${s.n}</small></div>${spark(s.p)}
  <div class="pr"><b class="${s.rank<=3?"hi":""}">${(m.p*100).toFixed(0)} %</b><small class="${m.er>=0?"up":"dn"}">${sg(m.er)}</small></div></div>
  <button class="star ${fav.has(s.k)?"on":""}" data-s="${s.k}" aria-pressed="${fav.has(s.k)}" aria-label="Favorit ${s.k}">${fav.has(s.k)?"★":"☆"}</button>
  <div class="bar"><i style="width:${m.p*100}%"></i></div>
- <div class="det">${chart(s.p,m,hz,s.k)}<div class="why"><b>Varför:</b> ${why(m)}</div><div class="grid">
+ ${open!==s.k?"":`<div class="det">${chart(s.p,m,hz,s.k)}<div class="why"><b>Varför:</b> ${why(m)}</div><div class="grid">
  <div><span>Edge mot bas</span><b class="${m.edge>=0?"up":"dn"}">${sg(m.edge)}</b></div>
  <div><span>Basnivå</span><b>${pc(m.base)}</b></div>
  <div><span>Momentum 5d</span><b>${sg(f[0])}</b></div>
@@ -423,14 +423,15 @@ function render(){
  <div><span>RSI(14)</span><b>${f[2].toFixed(0)}</b></div>
  <div><span>Rel. styrka</span><b>${sg(f[5])}</b></div>
  <div><span>Prognosspridning</span><b>±${pc(m.sd)}</b></div>
- <div><span>Historiska jämförelser</span><b>${m.n}</b></div></div></div></div>`}).join("");
+ <div><span>Historiska jämförelser</span><b>${m.n}</b></div></div></div>`}</div>`}).join("")+(res.length>shown?`<button class="btn" id="more" style="grid-column:1/-1">Visa fler (${res.length-shown} kvar)</button>`:"");
+ {const mb=$("#more");if(mb)mb.onclick=()=>{shown+=50;render()}}
  if(!res.length)$("#list").innerHTML='<div class="card mu" style="text-align:center">Inga träffar</div>';
  document.querySelectorAll("#list .row").forEach(r=>{r.onkeydown=e=>{if(e.key=="Enter"||e.key==" "){e.preventDefault();r.click()}};r.onclick=()=>{const k=r.parentNode.dataset.k;open=open==k?"":k;render();document.querySelector('#list [data-k="'+k+'"] .row')?.focus()}});
  document.querySelectorAll(".star").forEach(b=>b.onclick=e=>{e.stopPropagation();const k=b.dataset.s;fav.has(k)?fav.delete(k):fav.add(k);ls("aa_fav",JSON.stringify([...fav]));render();document.querySelector('.star[data-s="'+k+'"]')?.focus()});
  mkt();
 }
 $("#seg").innerHTML=[3,5,10].map(h=>`<button data-h="${h}" class="${h==hz?"on":""}">${h} dagar</button>`).join("");
-$("#seg").onclick=e=>{const h=e.target.dataset.h;if(!h)return;hz=+h;document.querySelectorAll("#seg button").forEach(b=>b.classList.toggle("on",b.dataset.h==h));render()};
+$("#seg").onclick=e=>{const h=e.target.dataset.h;if(!h)return;hz=+h;shown=50;document.querySelectorAll("#seg button").forEach(b=>b.classList.toggle("on",b.dataset.h==h));render()};
 function initMkt(){const m20=idx[N-1]/idx[N-21]-1,vol=sd(mr.slice(-20))/sd(mr.slice(-250));
 const reg=m20>.01&&vol<1.2?["Positivt","up"]:m20<-.01||vol>1.5?["Defensivt","dn"]:["Neutralt","nt"];
 $("#regchip").textContent=reg[0];$("#regchip").className="chip "+reg[1];
@@ -440,10 +441,10 @@ $("#mg").innerHTML=`<div><span>Index 20d</span><b>${sg(m20)}</b></div><div><span
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{document.querySelectorAll("nav button,.tab").forEach(x=>x.classList.remove("on"));b.classList.add("on");document.querySelectorAll("nav button").forEach(x=>x.removeAttribute("aria-current"));b.setAttribute("aria-current","page");$("#t"+b.dataset.t).classList.add("on");if(b.dataset.t=="1"&&!btDone){btDone=1;$("#bt").textContent="Beräknar…";setTimeout(runBT,40)};$(".pill").style.transform="translateX("+b.dataset.t*100+"%)"});
 const sch=$("#sch"),qi=$("#q");
 $("#sb").onclick=()=>{document.querySelector('nav button[data-t="0"]').click();qi.focus()};
-qi.oninput=()=>{q=qi.value.trim().toLowerCase();open="";render()};
+qi.oninput=()=>{q=qi.value.trim().toLowerCase();open="";shown=50;render()};
 $("#qx").onclick=()=>{qi.value="";q="";render();qi.focus()};
-chips();$("#chips").onclick=e=>{const c=e.target.dataset.c;if(!c)return;sf=c;open="";chips();render();document.querySelector('#chips [data-c="'+c+'"]')?.focus()};
-$("#srt").onchange=e=>{srt=e.target.value;render()};
+chips();$("#chips").onclick=e=>{const c=e.target.dataset.c;if(!c)return;sf=c;open="";shown=50;chips();render();document.querySelector('#chips [data-c="'+c+'"]')?.focus()};
+$("#srt").onchange=e=>{srt=e.target.value;shown=50;render()};
 let lastF=null,cfFn=null;
 function openM(m,f){lastF=document.activeElement;m.classList.remove("hide");(f||m.querySelector("button")).focus()}
 function closeM(m){m.classList.add("hide");lastF&&lastF.focus&&lastF.focus()}
@@ -453,7 +454,7 @@ document.addEventListener("keydown",e=>{const m=document.querySelector(".modal:n
  if(e.key=="Escape"&&m&&m.id=="cf")closeM(m);
  if(e.key=="Tab"&&m){const b=[...m.querySelectorAll("button")],f=b[0],l=b[b.length-1];if(e.shiftKey&&document.activeElement==f){e.preventDefault();l.focus()}else if(!e.shiftKey&&document.activeElement==l){e.preventDefault();f.focus()}}
  if(e.key=="/"&&!m&&!/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();document.querySelector('nav button[data-t="0"]').click();qi.focus()}});
-const OPT=[["Utseende",[["th","Tema",[["","Auto"],["light","Ljust"],["dark","Mörkt"]]],["cb","Färger för upp/ner",[["0","Grön/röd"],["1","Blå/orange"]]],["cmp","Tät lista",[["0","Av"],["1","På"]]],["rm","Mindre rörelse",[["0","Av"],["1","På"]]]]],["Prognos",[["hz","Standardhorisont",[["3","3 dagar"],["5","5 dagar"],["10","10 dagar"]]],["srt","Standardsortering",[["p","Sannolikhet"],["er","Avkastning"],["risk","Risk"]]],["lim","Antal aktier i listan",[["0","Alla"],["10","Topp 10"],["20","Topp 20"]]],["min","Minsta sannolikhet",[["0","Alla"],["55","55 %"],["60","60 %"],["65","65 %"]]],["sp","Trendlinje i listan",[["1","Visa"],["0","Dölj"]]]]]];
+const OPT=[["Utseende",[["th","Tema",[["","Auto"],["light","Ljust"],["dark","Mörkt"]]],["cb","Färger för upp/ner",[["0","Grön/röd"],["1","Blå/orange"]]],["cmp","Tät lista",[["0","Av"],["1","På"]]],["rm","Mindre rörelse",[["0","Av"],["1","På"]]]]],["Prognos",[["hz","Standardhorisont",[["3","3 dagar"],["5","5 dagar"],["10","10 dagar"]]],["srt","Standardsortering",[["p","Sannolikhet"],["er","Avkastning"],["risk","Risk"]]],["lim","Antal aktier i listan",[["0","Alla"],["10","Topp 10"],["20","Topp 20"],["50","Topp 50"],["100","Topp 100"]]],["min","Minsta sannolikhet",[["0","Alla"],["55","55 %"],["60","60 %"],["65","65 %"]]],["sp","Trendlinje i listan",[["1","Visa"],["0","Dölj"]]]]]];
 const save=()=>ls("aa_st",JSON.stringify(ST));
 function apply(){const d=document.documentElement,B=document.body;
  ST.th?d.dataset.theme=ST.th:delete d.dataset.theme;ST.cb=="1"?d.dataset.cb="1":delete d.dataset.cb;
@@ -462,7 +463,7 @@ function apply(){const d=document.documentElement,B=document.body;
  document.querySelectorAll("#setl [data-k]").forEach(x=>x.classList.toggle("on",ST[x.dataset.k]==x.dataset.v));
  document.querySelectorAll("#seg button").forEach(x=>x.classList.toggle("on",+x.dataset.h==hz));$("#srt").value=srt}
 $("#setl").innerHTML=OPT.map(([g,rows])=>`<div class="card"><b>${g}</b>${rows.map(([k,l,o])=>`<div class="st"><span>${l}</span><div class="seg">${o.map(([v,t])=>`<button data-k="${k}" data-v="${v}">${t}</button>`).join("")}</div></div>`).join("")}</div>`).join("")+`<div class="card"><b>Data och integritet</b><div class="st"><button class="act" id="a1">Rensa favoriter</button><button class="act" id="a2">Visa välkomstrutan igen</button><button class="act dn" id="a3">Återställ alla inställningar</button></div></div>`;
-$("#setl").onclick=e=>{const k=e.target.dataset.k;if(!k)return;ST[k]=e.target.dataset.v;if(k=="hz")hz=+ST.hz;if(k=="srt")srt=ST.srt;save();apply();render()};
+$("#setl").onclick=e=>{const k=e.target.dataset.k;if(!k)return;ST[k]=e.target.dataset.v;if(k=="hz")hz=+ST.hz;if(k=="srt")srt=ST.srt;shown=50;save();apply();render()};
 $("#seg").addEventListener("click",e=>{if(e.target.dataset.h){ST.hz=e.target.dataset.h;save();apply()}});
 $("#srt").addEventListener("change",e=>{ST.srt=srt=e.target.value;save();apply()});
 $("#a1").onclick=()=>ask("Rensa favoriter?","Alla stjärnmärkta aktier tas bort.","Rensa",()=>{fav.clear();ls("aa_fav","[]");render()});$("#a2").onclick=()=>openM($("#md"),$("#ok"));
@@ -484,7 +485,7 @@ function finishText(){
  }
 }
 $("#list").innerHTML='<div class="card mu" role="status">Beräknar prognoser…</div>';apply();
-(async()=>{if(!(await loadReal()))demo();initMkt();finishText();render()})();
+(async()=>{if(!(await loadReal()))demo();initMkt();finishText();chips();render()})();
 </script>
 </body>
 </html>
