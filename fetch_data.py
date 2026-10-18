@@ -1,45 +1,72 @@
 #!/usr/bin/env python3
-"""Hämtar dagliga slutkurser och skriver data.json som sidan läser.
+"""Hämtar dagliga slutkurser för S&P 500 och skriver data.json som sidan läser.
 
-Datakälla:
-  - Tiingo om miljövariabeln TIINGO_API_KEY finns (justerade kurser, rekommenderas)
-  - annars Stooq (ingen nyckel krävs)
+Aktielista (i prioritetsordning):
+  1. CSV med S&P 500-medlemmar (github.com/datasets/s-and-p-500-companies)
+  2. Wikipedia-tabellen "List of S&P 500 companies"
+  3. En inbyggd lista med 49 stora aktier (om båda ovan misslyckas)
+
+Kurskälla (den första som fungerar används):
+  Tiingo (om TIINGO_API_KEY finns) -> Yahoo Finance -> Stooq
 
 Användning:
-  python3 scripts/fetch_data.py                # skriver data.json
-  python3 scripts/fetch_data.py --out data.json --days 800
+  python3 fetch_data.py --out data.json
+  python3 fetch_data.py --out data.json --days 800 --limit 30     # snabbtest
 """
 import argparse
 import csv
 import io
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
-# (ticker, namn) – samma 50 aktier som i demoversionen. Index = SPY (S&P 500 ETF).
-TICKERS = [
-    ("AAPL", "Apple"), ("MSFT", "Microsoft"), ("NVDA", "NVIDIA"), ("AMZN", "Amazon"),
-    ("GOOGL", "Alphabet"), ("META", "Meta Platforms"), ("TSLA", "Tesla"), ("AVGO", "Broadcom"),
-    ("JPM", "JPMorgan Chase"), ("V", "Visa"), ("LLY", "Eli Lilly"), ("COST", "Costco"),
-    ("NFLX", "Netflix"), ("AMD", "AMD"), ("CRM", "Salesforce"), ("XOM", "Exxon Mobil"),
-    ("UNH", "UnitedHealth"), ("PLTR", "Palantir"), ("ORCL", "Oracle"), ("ADBE", "Adobe"),
-    ("WMT", "Walmart"), ("MA", "Mastercard"), ("HD", "Home Depot"), ("PG", "Procter & Gamble"),
-    ("JNJ", "Johnson & Johnson"), ("BAC", "Bank of America"), ("KO", "Coca-Cola"),
-    ("PEP", "PepsiCo"), ("MRK", "Merck"), ("ABBV", "AbbVie"), ("CVX", "Chevron"),
-    ("TMO", "Thermo Fisher"), ("CSCO", "Cisco"), ("MCD", "McDonald's"), ("DIS", "Disney"),
-    ("INTC", "Intel"), ("QCOM", "Qualcomm"), ("TXN", "Texas Instruments"), ("NKE", "Nike"),
-    ("PYPL", "PayPal"), ("UBER", "Uber"), ("SNOW", "Snowflake"), ("COIN", "Coinbase"),
-    ("BA", "Boeing"), ("GS", "Goldman Sachs"), ("WFC", "Wells Fargo"), ("CAT", "Caterpillar"),
-    ("IBM", "IBM"), ("MU", "Micron"),
+# Reservlista (ticker, namn, sektor) om indexlistan inte kan hämtas.
+FALLBACK = [
+    ("AAPL", "Apple", "Teknik"), ("MSFT", "Microsoft", "Teknik"), ("NVDA", "NVIDIA", "Teknik"),
+    ("AMZN", "Amazon", "Konsument"), ("GOOGL", "Alphabet", "Kommunikation"),
+    ("META", "Meta Platforms", "Kommunikation"), ("TSLA", "Tesla", "Konsument"),
+    ("AVGO", "Broadcom", "Teknik"), ("JPM", "JPMorgan Chase", "Finans"), ("V", "Visa", "Finans"),
+    ("LLY", "Eli Lilly", "Hälsa"), ("COST", "Costco", "Dagligvaror"),
+    ("NFLX", "Netflix", "Kommunikation"), ("AMD", "AMD", "Teknik"), ("CRM", "Salesforce", "Teknik"),
+    ("XOM", "Exxon Mobil", "Energi"), ("UNH", "UnitedHealth", "Hälsa"), ("PLTR", "Palantir", "Teknik"),
+    ("ORCL", "Oracle", "Teknik"), ("ADBE", "Adobe", "Teknik"), ("WMT", "Walmart", "Dagligvaror"),
+    ("MA", "Mastercard", "Finans"), ("HD", "Home Depot", "Konsument"),
+    ("PG", "Procter & Gamble", "Dagligvaror"), ("JNJ", "Johnson & Johnson", "Hälsa"),
+    ("BAC", "Bank of America", "Finans"), ("KO", "Coca-Cola", "Dagligvaror"),
+    ("PEP", "PepsiCo", "Dagligvaror"), ("MRK", "Merck", "Hälsa"), ("ABBV", "AbbVie", "Hälsa"),
+    ("CVX", "Chevron", "Energi"), ("TMO", "Thermo Fisher", "Hälsa"), ("CSCO", "Cisco", "Teknik"),
+    ("MCD", "McDonald's", "Konsument"), ("DIS", "Disney", "Kommunikation"), ("INTC", "Intel", "Teknik"),
+    ("QCOM", "Qualcomm", "Teknik"), ("TXN", "Texas Instruments", "Teknik"), ("NKE", "Nike", "Konsument"),
+    ("PYPL", "PayPal", "Finans"), ("UBER", "Uber", "Industri"), ("SNOW", "Snowflake", "Teknik"),
+    ("COIN", "Coinbase", "Finans"), ("BA", "Boeing", "Industri"), ("GS", "Goldman Sachs", "Finans"),
+    ("WFC", "Wells Fargo", "Finans"), ("CAT", "Caterpillar", "Industri"), ("IBM", "IBM", "Teknik"),
+    ("MU", "Micron", "Teknik"),
 ]
+
+SECTOR_SV = {
+    "information technology": "Teknik",
+    "communication services": "Kommunikation",
+    "consumer discretionary": "Konsument",
+    "consumer staples": "Dagligvaror",
+    "health care": "Hälsa",
+    "financials": "Finans",
+    "energy": "Energi",
+    "industrials": "Industri",
+    "materials": "Material",
+    "utilities": "Försörjning",
+    "real estate": "Fastigheter",
+}
+
 INDEX_TICKER = "SPY"
 MIN_ROWS = 300          # modellen behöver minst ~260 handelsdagar
-MIN_STOCKS = 40         # skriv inte över data.json om för många aktier saknas
 UA = {"User-Agent": "Mozilla/5.0 (valora-analytics data job)"}
+CSV_URL = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
+WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 
 def http_get(url, tries=3, wait=5):
@@ -63,6 +90,57 @@ def http_get(url, tries=3, wait=5):
     raise RuntimeError(f"misslyckades hämta {url.split('?')[0]}: {last}")
 
 
+# ---------- aktielista ----------
+
+def sector_sv(s):
+    s = (s or "").strip()
+    return SECTOR_SV.get(s.lower(), s or "Övrigt")
+
+
+def universe_csv():
+    rows = list(csv.DictReader(io.StringIO(http_get(CSV_URL))))
+    out = []
+    for r in rows:
+        tk = (r.get("Symbol") or "").strip()
+        name = (r.get("Security") or r.get("Name") or tk).strip()
+        if tk:
+            out.append((tk, name, sector_sv(r.get("GICS Sector") or r.get("Sector"))))
+    return out
+
+
+def universe_wiki():
+    html = http_get(WIKI_URL)
+    table = html.split('id="constituents"', 1)[1].split("</table>", 1)[0]
+    strip = lambda x: re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", x)).replace("&amp;", "&").strip()
+    out = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", table, re.S):
+        tds = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
+        if len(tds) >= 3 and strip(tds[0]):
+            out.append((strip(tds[0]), strip(tds[1]), sector_sv(strip(tds[2]))))
+    return out
+
+
+def get_universe():
+    for label, fn in (("CSV", universe_csv), ("Wikipedia", universe_wiki)):
+        try:
+            u = fn()
+            if len(u) >= 400:
+                seen, res = set(), []
+                for t in u:
+                    if t[0] not in seen:
+                        seen.add(t[0])
+                        res.append(t)
+                print(f"Aktielista: {len(res)} aktier ({label})")
+                return res
+            print(f"  {label}: för få rader ({len(u)})", file=sys.stderr)
+        except Exception as e:
+            print(f"  {label} fungerade inte: {e}", file=sys.stderr)
+    print(f"VARNING: använder reservlistan med {len(FALLBACK)} aktier", file=sys.stderr)
+    return list(FALLBACK)
+
+
+# ---------- kurskällor ----------
+
 def stooq(ticker, start):
     sym = ticker.lower().replace(".", "-") + ".us"
     url = f"https://stooq.com/q/d/l/?s={sym}&i=d&d1={start:%Y%m%d}&d2={date.today():%Y%m%d}"
@@ -79,7 +157,8 @@ def stooq(ticker, start):
 
 
 def tiingo(ticker, start, key):
-    url = (f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+    sym = ticker.replace(".", "-")
+    url = (f"https://api.tiingo.com/tiingo/daily/{sym}/prices"
            f"?startDate={start:%Y-%m-%d}&token={key}")
     rows = json.loads(http_get(url))
     return {r["date"][:10]: float(r["adjClose"]) for r in rows if r.get("adjClose")}
@@ -107,16 +186,22 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="data.json")
     ap.add_argument("--days", type=int, default=800, help="antal handelsdagar att spara")
+    ap.add_argument("--limit", type=int, default=0, help="(test) hämta bara de N första aktierna")
     a = ap.parse_args()
 
     key = os.environ.get("TIINGO_API_KEY", "").strip()
     start = date.today() - timedelta(days=int(a.days * 1.5) + 10)
 
+    universe = get_universe()
+    if a.limit:
+        universe = universe[:a.limit]
+    min_stocks = max(30, int(0.8 * len(universe))) if not a.limit else 1
+
     # Källor i prioritetsordning; den första som levererar index-data används för allt.
     providers = []
     if key:
         providers.append(("Tiingo", lambda t: tiingo(t, start, key), 1.5))
-    providers.append(("Yahoo", lambda t: yahoo(t, start), 0.4))
+    providers.append(("Yahoo", lambda t: yahoo(t, start), 0.3))
     providers.append(("Stooq", lambda t: stooq(t, start), 0.0))
 
     idx = None
@@ -136,7 +221,7 @@ def main():
     cal = sorted(idx)[-a.days:]                      # gemensam handelskalender
 
     stocks, failed = [], []
-    for tk, name in TICKERS:
+    for n, (tk, name, sector) in enumerate(universe, 1):
         try:
             time.sleep(pause)
             px = fetch(tk)
@@ -150,14 +235,15 @@ def main():
             series = [first if v is None else v for v in series]
             if first is None or any(v <= 0 for v in series):
                 raise RuntimeError("ogiltiga kurser")
-            stocks.append({"k": tk, "n": name, "p": [round(v, 4) for v in series]})
-            print(f"  ok  {tk}")
+            stocks.append({"k": tk, "n": name, "s": sector, "p": [round(v, 3) for v in series]})
         except Exception as e:
             failed.append(tk)
             print(f"  FEL {tk}: {e}", file=sys.stderr)
+        if n % 50 == 0:
+            print(f"  {n}/{len(universe)} klara ({len(stocks)} ok)", flush=True)
 
-    if len(stocks) < MIN_STOCKS:
-        sys.exit(f"Bara {len(stocks)} aktier hämtades (krav {MIN_STOCKS}) – data.json lämnas orörd.")
+    if len(stocks) < min_stocks:
+        sys.exit(f"Bara {len(stocks)} aktier hämtades (krav {min_stocks}) – data.json lämnas orörd.")
 
     idx_series, last = [], None
     for d in cal:
@@ -169,14 +255,15 @@ def main():
         "asof": cal[-1],
         "source": source,
         "dates": cal,
-        "index": [round(v, 4) for v in idx_series],
+        "index": [round(v, 3) for v in idx_series],
         "stocks": stocks,
         "failed": failed,
     }
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(data, f, separators=(",", ":"))
-    print(f"Skrev {a.out}: {len(stocks)} aktier, {len(cal)} dagar, senaste {cal[-1]}"
-          + (f", saknas: {', '.join(failed)}" if failed else ""))
+    size = os.path.getsize(a.out) / 1e6
+    print(f"Skrev {a.out}: {len(stocks)} aktier, {len(cal)} dagar, {size:.1f} MB, senaste {cal[-1]}"
+          + (f", saknas: {len(failed)} st" if failed else ""))
 
 
 if __name__ == "__main__":
